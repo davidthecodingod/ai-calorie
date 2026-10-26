@@ -14,8 +14,8 @@ photo you choose to have analysed.
   ingredient-by-ingredient breakdown.
 - **Scan a package** — point the camera at a barcode and the product is looked up
   in Open Food Facts, so the figures are the label's own rather than a guess. For
-  anything not in the database, photograph the nutrition panel instead and it is
-  transcribed.
+  anything not in the database, photograph the nutrition panel: it is read **on
+  your own machine**, so it costs nothing and the photo is never uploaded.
 - **Correct it in words** — "it was a double portion", "no dressing" — and the
   estimate is recomputed.
 - **Daily targets** — built from your height, weight, age, activity and goal with
@@ -45,8 +45,14 @@ npm run dev
 ## Where the numbers come from
 
 - **Barcodes** — [Open Food Facts](https://world.openfoodfacts.org), open data, no
-  key and no account. Figures are the manufacturer's, scaled to one serving.
-- **Meal photos, descriptions and nutrition panels** — a vision model.
+  key and no account. Figures are the manufacturer's, scaled to one serving. Free.
+- **Nutrition panels** — read on your machine with a WebAssembly build of
+  Tesseract, then cross-checked (sugars cannot exceed carbohydrate, the macros
+  must account for the stated energy). Free, offline after first use, and the
+  photo never leaves the machine. If too little comes out legibly, the app offers
+  the AI read below instead.
+- **Meal photos and written descriptions** — a vision model. This is the only
+  path that costs anything.
 
 Estimates come from a vision model. The app looks for credentials in this order:
 

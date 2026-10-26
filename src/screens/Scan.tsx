@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from '../components/Icon'
 import { api } from '../api'
+import { analysisFromPanel, readLabelOnDevice } from '../ocr'
 import type { Analysis } from '../types'
 
 type Mode = 'camera' | 'package' | 'describe'
-type Phase = 'capture' | 'analyzing' | 'error'
+type Phase = 'capture' | 'analyzing' | 'reading' | 'unreadable' | 'error'
 
 export interface ScanResult {
   analysis: Analysis
@@ -73,6 +74,7 @@ export function Scan({
   const [detected, setDetected] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [stage, setStage] = useState(0)
+  const [ocrProgress, setOcrProgress] = useState(0)
   const [camError, setCamError] = useState('')
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -200,9 +202,40 @@ export function Scan({
     }
   }
 
-  const readLabelNow = () => {
+  const panelImage = () => {
     const video = videoRef.current
-    const data = shot ?? (video ? frameToJpeg(video, 1280) : null)
+    return shot ?? (video ? frameToJpeg(video, 1280) : null)
+  }
+
+  /** Free path: OCR runs here in the browser, nothing is uploaded. */
+  const readPanelFree = async () => {
+    const data = panelImage()
+    if (!data || busyRef.current) return
+    busyRef.current = true
+    setShot(data)
+    stopCamera()
+    setOcrProgress(0)
+    setPhase('reading')
+    try {
+      const { parsed, usable } = await readLabelOnDevice(data, setOcrProgress)
+      if (usable) {
+        onResult({ analysis: analysisFromPanel(parsed), image: data, source: 'label' })
+      } else {
+        setPhase('unreadable')
+      }
+    } catch (e) {
+      setError(
+        `On-device reading failed: ${(e as Error).message}. You can have it read by AI instead.`,
+      )
+      setPhase('unreadable')
+    } finally {
+      busyRef.current = false
+    }
+  }
+
+  /** Paid fallback: the panel photo goes to the model. */
+  const readPanelWithAi = () => {
+    const data = panelImage()
     if (!data) return
     setShot(data)
     stopCamera()
@@ -222,6 +255,44 @@ export function Scan({
   }
 
   if (phase === 'analyzing') return <Analyzing shot={shot} stage={stage} stages={stages} />
+
+  if (phase === 'reading') return <ReadingPanel shot={shot} progress={ocrProgress} />
+
+  if (phase === 'unreadable') {
+    return (
+      <div className="fullscreen">
+        <div className="scroll page-pad" style={{ display: 'grid', placeItems: 'center' }}>
+          <div className="col" style={{ gap: 16, textAlign: 'center', alignItems: 'center' }}>
+            <span style={{ color: 'var(--warn)' }}>
+              <Icon name="info" size={38} stroke={1.6} />
+            </span>
+            <h2 className="h2">Could not read that panel</h2>
+            <p className="body" style={{ maxWidth: 310 }}>
+              {error ||
+                'Not enough of the numbers came out clearly. A straight-on photo in good light usually does it.'}
+            </p>
+            <div className="col" style={{ gap: 10, width: '100%', maxWidth: 320, marginTop: 4 }}>
+              <button
+                className="btn btn-block"
+                onClick={() => {
+                  setError('')
+                  setShot(null)
+                  setPhase('capture')
+                }}
+              >
+                Retake the photo
+              </button>
+              <button className="btn btn-soft btn-block" onClick={readPanelWithAi}>
+                <Icon name="sparkle" size={16} stroke={1.8} />
+                Read it with AI instead
+              </button>
+              <p className="small">Reading with AI uses a small amount of credit.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   if (phase === 'error') {
     return (
@@ -392,9 +463,13 @@ export function Scan({
                     Look up
                   </button>
                 </div>
-                <button className="btn btn-soft btn-block" onClick={readLabelNow} disabled={!!camError && !shot}>
+                <button
+                  className="btn btn-soft btn-block"
+                  onClick={() => void readPanelFree()}
+                  disabled={!!camError && !shot}
+                >
                   <Icon name="text" size={16} stroke={1.8} />
-                  {shot ? 'Read this panel' : 'Read the nutrition panel instead'}
+                  {shot ? 'Read this panel — free' : 'Read the nutrition panel — free'}
                 </button>
                 {shot && (
                   <button className="btn btn-ghost btn-block" onClick={() => setShot(null)}>
@@ -570,6 +645,42 @@ function Analyzing({
           <Icon name="info" size={16} stroke={1.9} />
           <span>
             Check the serving size on the next screen — a pack is often more than one serving.
+          </span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReadingPanel({ shot, progress }: { shot: string | null; progress: number }) {
+  const pct = Math.round(Math.min(1, Math.max(0, progress)) * 100)
+  return (
+    <div className="fullscreen">
+      <div className="camera-stage" style={{ flex: '0 0 46%' }}>
+        {shot && (
+          <>
+            <img className="shot" src={shot} alt="" style={{ filter: 'brightness(0.72)' }} />
+            <div className="scan-sweep" />
+          </>
+        )}
+      </div>
+      <div className="scroll" style={{ paddingTop: 26 }}>
+        <h1 className="h1" style={{ marginBottom: 10 }}>
+          Reading the panel…
+        </h1>
+        <p className="body" style={{ marginBottom: 20 }}>
+          This runs on your own machine. The photo is not uploaded and this costs nothing.
+        </p>
+        <div className="macro-track" style={{ height: 8 }}>
+          <div className="macro-fill" style={{ width: `${Math.max(4, pct)}%`, background: 'var(--accent)' }} />
+        </div>
+        <p className="small num" style={{ marginTop: 8 }}>
+          {pct}%
+        </p>
+        <div className="banner" style={{ marginTop: 26 }}>
+          <Icon name="shield" size={16} stroke={1.9} />
+          <span>
+            The first panel you read downloads the text-recognition data once, then works offline.
           </span>
         </div>
       </div>
