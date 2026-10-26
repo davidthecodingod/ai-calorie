@@ -4,7 +4,16 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadEnv } from './env.mjs'
 import { store } from './store.mjs'
-import { analyzeImage, analyzeLabel, analyzeText, refine, provider } from './ai.mjs'
+import {
+  analyzeImage,
+  analyzeLabel,
+  analyzeText,
+  refine,
+  providerName,
+  NeedsConsent,
+  PaymentRequired,
+} from './ai.mjs'
+import { DISCLOSURE, balanceLine, hasAppToken, provision, readCredential } from './publik.mjs'
 import { lookupBarcode, NotFound } from './offapi.mjs'
 import { runSelfTest, appMeta } from './selftest.mjs'
 
@@ -22,12 +31,57 @@ app.use(express.json({ limit: '25mb' }))
 const fail = (res, err) => {
   const message = err instanceof Error ? err.message : String(err)
   console.error('[ai-calorie]', message)
+  // The UI needs to tell these three apart: consent, balance, everything else.
+  if (err instanceof NeedsConsent) {
+    return res.status(409).json({ error: message, code: 'needs_consent' })
+  }
+  if (err instanceof PaymentRequired) {
+    return res.status(402).json({ error: message, code: 'payment_required', topUpUrl: err.topUpUrl })
+  }
   res.status(500).json({ error: message })
 }
 
 app.get('/api/status', (_req, res) => {
   const { slug, version } = appMeta()
-  res.json({ app: slug, version, aiProvider: provider(), dataFile: store.path })
+  res.json({ app: slug, version, aiProvider: providerName(), dataFile: store.path })
+})
+
+/** What the UI needs to decide between asking consent, showing a balance, or nothing. */
+app.get('/api/ai', (_req, res) => {
+  const c = readCredential()
+  res.json({
+    provider: providerName(),
+    appTokenPresent: hasAppToken(),
+    disclosure: DISCLOSURE,
+    credential: c
+      ? {
+          balanceLine: balanceLine(c.balance_micros, c.claim_state),
+          costSentence: c.cost_sentence,
+          claimState: c.claim_state,
+          claimUrl: c.claim_url,
+          addCreditUrl: c.add_credit_url,
+        }
+      : null,
+  })
+})
+
+/** Called only after the UI has shown DISCLOSURE and the person said yes. */
+app.post('/api/ai/consent', async (_req, res) => {
+  try {
+    const c = await provision()
+    res.json({
+      provider: providerName(),
+      credential: {
+        balanceLine: balanceLine(c.balance_micros, c.claim_state),
+        costSentence: c.cost_sentence,
+        claimState: c.claim_state,
+        claimUrl: c.claim_url,
+        addCreditUrl: c.add_credit_url,
+      },
+    })
+  } catch (err) {
+    fail(res, err)
+  }
 })
 
 app.get('/api/data', (_req, res) => res.json(store.all()))
@@ -113,5 +167,5 @@ if (existsSync(dist)) {
 const port = Number(process.env.PORT || 4273)
 app.listen(port, () => {
   const { slug, version } = appMeta()
-  console.log(`${slug} ${version} - http://localhost:${port}  (ai: ${provider()})`)
+  console.log(`${slug} ${version} - http://localhost:${port}  (ai: ${providerName()})`)
 })

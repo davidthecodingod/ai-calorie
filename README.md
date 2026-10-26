@@ -54,14 +54,17 @@ npm run dev
 - **Meal photos and written descriptions** — a vision model. This is the only
   path that costs anything.
 
-Estimates come from a vision model. The app looks for credentials in this order:
+Meal photos resolve a provider in this order:
 
-1. `PUBLIK_APP_TOKEN` — calls publik API (`ai.chat`). This is the path a released
-   build uses.
-2. `ANTHROPIC_API_KEY` — your own key, as a fallback.
+1. **Your own key** — `ANTHROPIC_API_KEY`, if you set one. Get it from
+   <https://console.anthropic.com/settings/keys>.
+2. **publik API** — a released build carries `publik-app-token.txt` and
+   provisions a per-install key on first launch, after showing you what that
+   means and asking. No key to paste. See <https://publikhq.com/developers>.
 
-Copy `.env.example` to `.env` and fill in whichever you have. With neither set the
-app runs, but scanning returns a clear "no AI credential configured" error.
+Copy `.env.example` to `.env` only if you want to override that. With no provider
+set up, barcode and panel scanning still work — they never needed one — and meal
+photos ask you to choose a provider first.
 
 ## Self-test
 

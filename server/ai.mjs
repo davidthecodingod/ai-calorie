@@ -1,13 +1,40 @@
-// Food analysis. Routes through publik API when an app token is present,
-// and falls back to the user's own Anthropic key otherwise.
+// Food analysis. Routes through publik API (OpenAI-compatible, tier models) when
+// this install has a publik credential, and through the user's own Anthropic key
+// when they have set one. The own-key path takes precedence and is unchanged.
+import { MODELS, resolveProvider, topUpUrlFrom402 } from './publik.mjs'
 
-const PUBLIK_URL = () => process.env.PUBLIK_API_URL || 'https://publikhq.com/api/v1'
-const MODEL = () => process.env.ANTHROPIC_MODEL || 'claude-opus-5'
+/** The UI must show the publik disclosure and get a yes before provisioning. */
+export class NeedsConsent extends Error {
+  constructor() {
+    super('publik API has not been set up on this computer yet.')
+    this.code = 'needs_consent'
+  }
+}
+
+/** A 402 from publik: out of balance. Carries the one link we may show. */
+export class PaymentRequired extends Error {
+  constructor(message, topUpUrl) {
+    super(message)
+    this.code = 'payment_required'
+    this.topUpUrl = topUpUrl
+  }
+}
+
+const ownKey = () =>
+  process.env.ANTHROPIC_API_KEY
+    ? { baseURL: 'https://api.anthropic.com', apiKey: process.env.ANTHROPIC_API_KEY }
+    : null
 
 export function provider() {
-  if (process.env.PUBLIK_APP_TOKEN) return 'publik'
-  if (process.env.ANTHROPIC_API_KEY) return 'own-key'
-  return 'none'
+  return resolveProvider(ownKey())
+}
+
+/** For /api/status and the settings screen. */
+export function providerName() {
+  const p = provider()
+  if (p.kind === 'own') return 'own-key'
+  if (p.kind === 'publik') return 'publik'
+  return 'needs-consent'
 }
 
 const SCHEMA_RULES = `Reply with ONE JSON object and nothing else. No prose, no markdown fence.
@@ -36,67 +63,119 @@ of its nutrition. You are decisive: give a concrete number rather than a range, 
 never refuse because a photo is imperfect. If the image clearly contains no food, set
 calories to 0 and put the reason in "note".`
 
-async function callPublik(messages, maxTokens) {
-  const res = await fetch(`${PUBLIK_URL()}/ai/chat`, {
+const LABEL_RULES = `Reply with ONE JSON object and nothing else. No prose, no markdown fence.
+{
+  "name": string,               // the product name as printed
+  "brand": string,              // brand if visible, else ""
+  "portion": string,            // the serving the panel is stated per, e.g. "1 bar (40 g)"
+  "calories": number,           // PER SERVING, exactly as printed
+  "protein_g": number,
+  "carbs_g": number,
+  "fat_g": number,
+  "fiber_g": number,
+  "sugar_g": number,
+  "health_score": number,
+  "confidence": number,
+  "ingredients_text": string,
+  "ingredients": [],
+  "note": string
+}
+Copy the printed numbers; do not recompute or round them. Use the PER SERVING
+column when the panel shows both per-serving and per-100 g. If the panel states
+only per 100 g, use that and say so in "note". If a value is not printed, use 0.`
+
+/* ---------------- transport ---------------- */
+
+async function callPublik(p, { text, image, maxTokens, tier }) {
+  const content = [{ type: 'text', text }]
+  if (image) {
+    content.unshift({
+      type: 'image_url',
+      image_url: { url: `data:${image.mimeType};base64,${image.base64}` },
+    })
+  }
+  const res = await fetch(`${p.baseURL}/chat/completions`, {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${process.env.PUBLIK_APP_TOKEN}`,
-    },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${p.apiKey}` },
     body: JSON.stringify({
-      model: MODEL(),
+      model: MODELS[tier] ?? MODELS.balanced,
       max_tokens: maxTokens,
-      system: SYSTEM,
-      messages,
+      messages: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content },
+      ],
     }),
   })
-  const text = await res.text()
-  if (!res.ok) throw new Error(`publik ai.chat ${res.status}: ${text.slice(0, 400)}`)
-  return extractText(JSON.parse(text))
+  const raw = await res.text()
+  let body = {}
+  try {
+    body = raw ? JSON.parse(raw) : {}
+  } catch {
+    throw new Error(`publik API returned a non-JSON response: ${raw.slice(0, 200)}`)
+  }
+  if (res.status === 402) {
+    const { message, url } = topUpUrlFrom402(body)
+    throw new PaymentRequired(message, url)
+  }
+  if (!res.ok) {
+    throw new Error(body?.error?.message ?? `publik API answered ${res.status}`)
+  }
+  const out = body?.choices?.[0]?.message?.content
+  if (typeof out !== 'string') {
+    throw new Error(`publik API returned no completion: ${JSON.stringify(body).slice(0, 200)}`)
+  }
+  return out
 }
 
-async function callAnthropic(messages, maxTokens) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+async function callAnthropic(p, { text, image, maxTokens }) {
+  const content = []
+  if (image) {
+    content.push({
+      type: 'image',
+      source: { type: 'base64', media_type: image.mimeType, data: image.base64 },
+    })
+  }
+  content.push({ type: 'text', text })
+
+  const res = await fetch(`${p.baseURL}/v1/messages`, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'x-api-key': p.apiKey,
       'anthropic-version': '2023-06-01',
     },
     body: JSON.stringify({
-      model: MODEL(),
+      model: process.env.ANTHROPIC_MODEL || 'claude-opus-5',
       max_tokens: maxTokens,
       system: SYSTEM,
-      messages,
+      messages: [{ role: 'user', content }],
     }),
   })
-  const text = await res.text()
-  if (!res.ok) throw new Error(`anthropic ${res.status}: ${text.slice(0, 400)}`)
-  return extractText(JSON.parse(text))
-}
-
-// Accepts an Anthropic-shaped body, and tolerates a few common wrappers.
-function extractText(body) {
-  if (typeof body?.text === 'string') return body.text
-  if (typeof body?.completion === 'string') return body.completion
-  if (Array.isArray(body?.content)) {
-    return body.content.filter((b) => b.type === 'text').map((b) => b.text).join('')
+  const raw = await res.text()
+  let body = {}
+  try {
+    body = raw ? JSON.parse(raw) : {}
+  } catch {
+    throw new Error(`Anthropic returned a non-JSON response: ${raw.slice(0, 200)}`)
   }
-  const choice = body?.choices?.[0]?.message?.content
-  if (typeof choice === 'string') return choice
-  if (body?.data) return extractText(body.data)
-  if (body?.result) return extractText(body.result)
-  throw new Error(`unexpected ai response shape: ${JSON.stringify(body).slice(0, 300)}`)
+  if (!res.ok) throw new Error(body?.error?.message ?? `Anthropic answered ${res.status}`)
+  const out = (body.content ?? [])
+    .filter((b) => b.type === 'text')
+    .map((b) => b.text)
+    .join('')
+  if (!out) throw new Error('Anthropic returned no completion')
+  return out
 }
 
-async function complete(messages, maxTokens = 1400) {
+async function complete({ text, image, maxTokens = 1400, tier = 'balanced' }) {
   const p = provider()
-  if (p === 'publik') return callPublik(messages, maxTokens)
-  if (p === 'own-key') return callAnthropic(messages, maxTokens)
-  throw new Error(
-    'No AI credential configured. Set PUBLIK_APP_TOKEN (preferred) or ANTHROPIC_API_KEY.',
-  )
+  if (p.kind === 'needs_consent') throw new NeedsConsent()
+  return p.kind === 'own'
+    ? callAnthropic(p, { text, image, maxTokens })
+    : callPublik(p, { text, image, maxTokens, tier })
 }
+
+/* ---------------- shaping ---------------- */
 
 function parseJson(raw) {
   const start = raw.indexOf('{')
@@ -125,68 +204,35 @@ function normalize(raw) {
     note: String(raw.note || '').slice(0, 240),
     brand: String(raw.brand || '').slice(0, 40),
     ingredientsText: String(raw.ingredients_text || raw.ingredientsText || '').slice(0, 600),
-    ingredients: (Array.isArray(raw.ingredients) ? raw.ingredients : [])
-      .slice(0, 8)
-      .map((i) => ({
-        name: String(i.name || 'Item').slice(0, 60),
-        detail: String(i.detail || '').slice(0, 60),
-        calories: Math.max(0, Math.round(num(i.calories))),
-        protein_g: Math.max(0, Math.round(num(i.protein_g))),
-        carbs_g: Math.max(0, Math.round(num(i.carbs_g))),
-        fat_g: Math.max(0, Math.round(num(i.fat_g))),
-      })),
+    ingredients: (Array.isArray(raw.ingredients) ? raw.ingredients : []).slice(0, 8).map((i) => ({
+      name: String(i.name || 'Item').slice(0, 60),
+      detail: String(i.detail || '').slice(0, 60),
+      calories: Math.max(0, Math.round(num(i.calories))),
+      protein_g: Math.max(0, Math.round(num(i.protein_g))),
+      carbs_g: Math.max(0, Math.round(num(i.carbs_g))),
+      fat_g: Math.max(0, Math.round(num(i.fat_g))),
+    })),
   }
 }
 
+/* ---------------- the four jobs ---------------- */
+
 export async function analyzeImage({ base64, mimeType, note }) {
-  const content = [
-    { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
-    {
-      type: 'text',
-      text: `Estimate the nutrition of the food in this photo.${
-        note ? `\n\nThe user adds: "${note}" - trust this over what you infer.` : ''
-      }\n\n${SCHEMA_RULES}`,
-    },
-  ]
-  return normalize(parseJson(await complete([{ role: 'user', content }])))
+  const text = `Estimate the nutrition of the food in this photo.${
+    note ? `\n\nThe user adds: "${note}" - trust this over what you infer.` : ''
+  }\n\n${SCHEMA_RULES}`
+  return normalize(parseJson(await complete({ text, image: { base64, mimeType }, tier: 'smart' })))
 }
 
 export async function analyzeText({ description }) {
   const text = `Estimate the nutrition of this meal described in words: "${description}"\n\n${SCHEMA_RULES}`
-  return normalize(parseJson(await complete([{ role: 'user', content: text }])))
+  return normalize(parseJson(await complete({ text, tier: 'balanced' })))
 }
-
-const LABEL_RULES = `Reply with ONE JSON object and nothing else. No prose, no markdown fence.
-{
-  "name": string,               // the product name as printed
-  "brand": string,              // brand if visible, else ""
-  "portion": string,            // the serving the panel is stated per, e.g. "1 bar (40 g)"
-  "calories": number,           // PER SERVING, exactly as printed
-  "protein_g": number,
-  "carbs_g": number,            // total carbohydrate
-  "fat_g": number,              // total fat
-  "fiber_g": number,
-  "sugar_g": number,
-  "health_score": number,       // 0-100, your own judgement of this food
-  "confidence": number,         // 0-1, how legible the panel was
-  "ingredients_text": string,   // the ingredients list as printed, or ""
-  "ingredients": [],
-  "note": string
-}
-Copy the printed numbers; do not recompute or round them. Use the PER SERVING
-column when the panel shows both per-serving and per-100 g. If the panel states
-only per 100 g, use that and say so in "note". If a value is not printed, use 0.`
 
 export async function analyzeLabel({ base64, mimeType }) {
-  const content = [
-    { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
-    {
-      type: 'text',
-      text: `This is a photo of a packaged food's nutrition information panel.
-Read it and transcribe what it states.\n\n${LABEL_RULES}`,
-    },
-  ]
-  return normalize(parseJson(await complete([{ role: 'user', content }])))
+  const text = `This is a photo of a packaged food's nutrition information panel.
+Read it and transcribe what it states.\n\n${LABEL_RULES}`
+  return normalize(parseJson(await complete({ text, image: { base64, mimeType }, tier: 'smart' })))
 }
 
 export async function refine({ entry, instruction }) {
@@ -197,14 +243,5 @@ The user corrects it: "${instruction}"
 
 Apply the correction and re-estimate every affected field.
 ${SCHEMA_RULES}`
-  return normalize(parseJson(await complete([{ role: 'user', content: text }])))
-}
-
-// One cheap round trip used by the startup self-test.
-export async function ping() {
-  const out = await complete(
-    [{ role: 'user', content: 'Reply with the single word: ready' }],
-    16,
-  )
-  return out.trim().slice(0, 40)
+  return normalize(parseJson(await complete({ text, tier: 'balanced' })))
 }
