@@ -30,11 +30,11 @@ photo you choose to have analysed.
 
 ```sh
 npm install
-npm run build
 npm start
 ```
 
-Then open http://localhost:4273.
+Then open <http://localhost:4273>. The first `npm start` builds the interface,
+which takes a second; later starts skip it. Node 20 or newer.
 
 For development with hot reload:
 

@@ -2,7 +2,8 @@
 
 A local web app: an Express server (`server/`) serves a built React front end
 (`src/` → `dist/`) and holds the AI and lookup calls. User data lives in
-`~/.ai-calorie/data.json`. Build with `npm run build`, run with `npm start`.
+`~/.ai-calorie/data.json`. `npm start` builds the front end if `dist/` is missing (prestart hook), then
+serves it. `npm run build` on its own still works.
 
 Nutrition numbers come from three places, and only one of them costs anything:
 

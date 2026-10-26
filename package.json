@@ -1,14 +1,18 @@
 {
   "name": "ai-calorie",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "license": "MIT",
   "description": "AI Calorie - photo-based calorie and macro tracker",
   "type": "module",
   "main": "server/index.mjs",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "concurrently -k -n web,api -c cyan,magenta \"vite\" \"node --watch server/index.mjs\"",
     "build": "vite build",
+    "prestart": "node scripts/ensure-build.mjs",
     "start": "node server/index.mjs",
     "release": "npm run build",
     "selftest": "PUBLIK_SELF_TEST=1 node server/index.mjs",

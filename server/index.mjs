@@ -157,11 +157,25 @@ app.post('/api/refine', async (req, res) => {
   }
 })
 
-// Serve the built front end when it exists (the release path).
+// Serve the built front end. `npm start` builds it first (see prestart), so a
+// missing dist means someone started the server directly; say so plainly rather
+// than answering 404 for every page.
 const dist = join(root, 'dist')
-if (existsSync(dist)) {
+const built = existsSync(join(dist, 'index.html'))
+if (built) {
   app.use(express.static(dist))
   app.get('*', (_req, res) => res.sendFile(join(dist, 'index.html')))
+} else {
+  console.error('[ai-calorie] dist/ is missing — run "npm run build" first, or start with "npm start".')
+  app.get('*', (_req, res) =>
+    res
+      .status(503)
+      .type('text/plain')
+      .send(
+        'AI Calorie has not been built yet.\n\nRun:\n\n  npm install\n  npm start\n\n' +
+          'in the project folder, then reload this page.',
+      ),
+  )
 }
 
 const port = Number(process.env.PORT || 4273)
