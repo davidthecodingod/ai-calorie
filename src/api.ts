@@ -2,6 +2,30 @@ import type { Analysis, AppData, Entry, Profile, Settings, WeightPoint } from '.
 
 const BASE = '/api'
 
+/** Carries publik's two actionable states: needs consent, and out of balance. */
+export class ApiError extends Error {
+  code?: string
+  topUpUrl?: string | null
+  constructor(message: string, code?: string, topUpUrl?: string | null) {
+    super(message)
+    this.code = code
+    this.topUpUrl = topUpUrl ?? null
+  }
+}
+
+export interface AiState {
+  provider: 'publik' | 'own-key' | 'needs-consent'
+  appTokenPresent: boolean
+  disclosure: string
+  credential: {
+    balanceLine: string
+    costSentence: string | null
+    claimState: 'anonymous' | 'claimed'
+    claimUrl: string | null
+    addCreditUrl: string | null
+  } | null
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     ...init,
@@ -15,8 +39,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(`Bad response from the app server: ${text.slice(0, 160)}`)
   }
   if (!res.ok) {
-    const msg = (body as { error?: string } | null)?.error || `Request failed (${res.status})`
-    throw new Error(msg)
+    const b = body as { error?: string; code?: string; topUpUrl?: string | null } | null
+    throw new ApiError(b?.error || `Request failed (${res.status})`, b?.code, b?.topUpUrl)
   }
   return body as T
 }
@@ -30,6 +54,8 @@ export interface Status {
 
 export const api = {
   status: () => request<Status>('/status'),
+  aiState: () => request<AiState>('/ai'),
+  consent: () => request<{ provider: string; credential: AiState['credential'] }>('/ai/consent', { method: 'POST' }),
   data: () => request<AppData>('/data'),
   saveProfile: (profile: Profile) =>
     request<AppData>('/data', { method: 'PATCH', body: JSON.stringify({ profile }) }),

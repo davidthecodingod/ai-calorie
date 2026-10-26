@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Icon, type IconName } from '../components/Icon'
 import { Sheet } from '../components/ui'
+import { api, type AiState } from '../api'
 import { useStore } from '../store'
 import {
   ACTIVITY_COPY,
@@ -17,6 +18,18 @@ export function Settings() {
   const [editTargets, setEditTargets] = useState(false)
   const [editBody, setEditBody] = useState(false)
   const [confirmReset, setConfirmReset] = useState(false)
+  const [ai, setAi] = useState<AiState | null>(null)
+
+  useEffect(() => {
+    let live = true
+    api
+      .aiState()
+      .then((s) => live && setAi(s))
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [])
 
   const theme = data.settings.theme ?? 'system'
 
@@ -124,11 +137,51 @@ export function Settings() {
               ? 'publik API'
               : status?.aiProvider === 'own-key'
                 ? 'Own API key'
-                : 'Not configured'
+                : 'Not set up'
           }
         />
         <Row icon="shield" label="Your log lives" value="On this machine" />
         {status && <Row icon="info" label="Version" value={`${status.app} ${status.version}`} />}
+        {ai?.credential && (
+          <div style={{ padding: '14px 16px', borderTop: '1px solid var(--line)' }}>
+            <div className="spread" style={{ marginBottom: 10 }}>
+              <span className="small" style={{ fontWeight: 620, color: 'var(--ink)' }}>
+                publik balance
+              </span>
+              <span className="small num" style={{ fontWeight: 650 }}>
+                {ai.credential.balanceLine}
+              </span>
+            </div>
+            {ai.credential.costSentence && (
+              <p className="small" style={{ marginBottom: 12, lineHeight: 1.5 }}>
+                {ai.credential.costSentence}
+              </p>
+            )}
+            {ai.credential.claimState === 'anonymous'
+              ? ai.credential.claimUrl && (
+                  <a
+                    className="btn btn-sm btn-soft"
+                    href={ai.credential.claimUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ textDecoration: 'none' }}
+                  >
+                    Sign in with publik
+                  </a>
+                )
+              : ai.credential.addCreditUrl && (
+                  <a
+                    className="btn btn-sm btn-soft"
+                    href={ai.credential.addCreditUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    style={{ textDecoration: 'none' }}
+                  >
+                    Add a plan or pack
+                  </a>
+                )}
+          </div>
+        )}
       </Group>
 
       <div className="banner" style={{ marginBottom: 20 }}>

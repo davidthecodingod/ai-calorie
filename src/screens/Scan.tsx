@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from '../components/Icon'
-import { api } from '../api'
+import { api, ApiError, type AiState } from '../api'
+import { BalanceSheet, ConsentSheet } from '../components/AiGate'
 import { analysisFromPanel, readLabelOnDevice } from '../ocr'
 import type { Analysis } from '../types'
 
@@ -76,6 +77,12 @@ export function Scan({
   const [stage, setStage] = useState(0)
   const [ocrProgress, setOcrProgress] = useState(0)
   const [camError, setCamError] = useState('')
+  const [gate, setGate] = useState<
+    | { kind: 'consent'; state: AiState }
+    | { kind: 'balance'; message: string; topUpUrl: string | null }
+    | null
+  >(null)
+  const retryRef = useRef<null | (() => Promise<ScanResult>)>(null)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -150,10 +157,7 @@ export function Scan({
     return () => clearInterval(id)
   }, [phase, stages])
 
-  const run = async (
-    label: string[],
-    fn: () => Promise<ScanResult>,
-  ) => {
+  const run = async (label: string[], fn: () => Promise<ScanResult>) => {
     if (busyRef.current) return
     busyRef.current = true
     setStages(label)
@@ -161,8 +165,24 @@ export function Scan({
     try {
       onResult(await fn())
     } catch (e) {
-      setError((e as Error).message)
-      setPhase('error')
+      // publik has two states the person can actually do something about.
+      if (e instanceof ApiError && e.code === 'needs_consent') {
+        retryRef.current = fn
+        setPhase('capture')
+        try {
+          setGate({ kind: 'consent', state: await api.aiState() })
+        } catch {
+          setError((e as Error).message)
+          setPhase('error')
+        }
+      } else if (e instanceof ApiError && e.code === 'payment_required') {
+        retryRef.current = fn
+        setPhase('capture')
+        setGate({ kind: 'balance', message: e.message, topUpUrl: e.topUpUrl ?? null })
+      } else {
+        setError((e as Error).message)
+        setPhase('error')
+      }
     } finally {
       busyRef.current = false
     }
@@ -254,7 +274,34 @@ export function Scan({
     setPhase('capture')
   }
 
-  if (phase === 'analyzing') return <Analyzing shot={shot} stage={stage} stages={stages} />
+  const gateUi = gate && (
+    gate.kind === 'consent' ? (
+      <ConsentSheet
+        state={gate.state}
+        onClose={() => setGate(null)}
+        onAccepted={() => {
+          setGate(null)
+          const again = retryRef.current
+          retryRef.current = null
+          if (again) void run(stages, again)
+        }}
+      />
+    ) : (
+      <BalanceSheet
+        message={gate.message}
+        topUpUrl={gate.topUpUrl}
+        onClose={() => setGate(null)}
+      />
+    )
+  )
+
+  if (phase === 'analyzing')
+    return (
+      <>
+        <Analyzing shot={shot} stage={stage} stages={stages} />
+        {gateUi}
+      </>
+    )
 
   if (phase === 'reading') return <ReadingPanel shot={shot} progress={ocrProgress} />
 
@@ -540,6 +587,8 @@ export function Scan({
           />
         </>
       )}
+
+      {gateUi}
     </div>
   )
 }

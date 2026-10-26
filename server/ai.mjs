@@ -74,9 +74,10 @@ const LABEL_RULES = `Reply with ONE JSON object and nothing else. No prose, no m
   "fat_g": number,
   "fiber_g": number,
   "sugar_g": number,
-  "health_score": number,
-  "confidence": number,
-  "ingredients_text": string,
+  "health_score": number,       // 0-100 diet quality, where 100 is best. NOT 0-10.
+  "confidence": number,         // 0-1, how legible the panel was
+  "ingredients_text": string,   // the ingredients list as printed, or ""
+
   "ingredients": [],
   "note": string
 }
@@ -221,7 +222,9 @@ export async function analyzeImage({ base64, mimeType, note }) {
   const text = `Estimate the nutrition of the food in this photo.${
     note ? `\n\nThe user adds: "${note}" - trust this over what you infer.` : ''
   }\n\n${SCHEMA_RULES}`
-  return normalize(parseJson(await complete({ text, image: { base64, mimeType }, tier: 'smart' })))
+  // A meal photo is a judgement about a scene; balanced is the cheapest tier
+  // that does it well.
+  return normalize(parseJson(await complete({ text, image: { base64, mimeType }, tier: 'balanced' })))
 }
 
 export async function analyzeText({ description }) {
@@ -232,7 +235,8 @@ export async function analyzeText({ description }) {
 export async function analyzeLabel({ base64, mimeType }) {
   const text = `This is a photo of a packaged food's nutrition information panel.
 Read it and transcribe what it states.\n\n${LABEL_RULES}`
-  return normalize(parseJson(await complete({ text, image: { base64, mimeType }, tier: 'smart' })))
+  // Transcribing printed numbers needs no more than the fast tier.
+  return normalize(parseJson(await complete({ text, image: { base64, mimeType }, tier: 'fast' })))
 }
 
 export async function refine({ entry, instruction }) {
