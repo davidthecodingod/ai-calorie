@@ -11,7 +11,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const APP_SLUG = 'ai-calorie'
-export const APP_VERSION = '1.0.0'
+export const APP_VERSION = '1.0.1'
 export const DEFAULT_BASE_URL = 'https://publikhq.com/api/v1'
 
 /** Ask for a tier, never a vendor model name. */
