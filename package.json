@@ -1,0 +1,28 @@
+{
+  "name": "ai-calorie",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI Calorie - photo-based calorie and macro tracker",
+  "type": "module",
+  "main": "server/index.mjs",
+  "scripts": {
+    "dev": "concurrently -k -n web,api -c cyan,magenta \"vite\" \"node --watch server/index.mjs\"",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "release": "npm run build",
+    "selftest": "PUBLIK_SELF_TEST=1 node server/index.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}
