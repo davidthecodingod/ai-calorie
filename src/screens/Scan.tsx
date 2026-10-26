@@ -3,21 +3,33 @@ import { Icon } from '../components/Icon'
 import { api } from '../api'
 import type { Analysis } from '../types'
 
-type Mode = 'camera' | 'describe'
+type Mode = 'camera' | 'package' | 'describe'
 type Phase = 'capture' | 'analyzing' | 'error'
 
 export interface ScanResult {
   analysis: Analysis
   image?: string
-  source: 'photo' | 'text'
+  source: 'photo' | 'text' | 'barcode' | 'label'
 }
 
-const STAGES = [
+const MEAL_STAGES = [
   'Reading the photo',
   'Identifying the food',
   'Judging the portion',
   'Totalling the macros',
 ]
+const LABEL_STAGES = ['Reading the panel', 'Transcribing the figures', 'Checking the serving size']
+const BARCODE_STAGES = ['Looking up the barcode', 'Reading the label data', 'Scaling to one serving']
+
+const BARCODE_FORMATS = ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_39', 'code_128', 'itf']
+
+interface BarcodeDetectorLike {
+  detect(source: CanvasImageSource): Promise<{ rawValue: string }[]>
+}
+type BarcodeDetectorCtor = new (opts?: { formats?: string[] }) => BarcodeDetectorLike
+
+const barcodeSupported = () =>
+  typeof window !== 'undefined' && 'BarcodeDetector' in window
 
 /** Downscale and re-encode so the upload stays small. */
 async function toJpeg(blobUrl: string, maxEdge = 1024): Promise<{ dataUrl: string }> {
@@ -34,6 +46,16 @@ async function toJpeg(blobUrl: string, maxEdge = 1024): Promise<{ dataUrl: strin
   return { dataUrl: canvas.toDataURL('image/jpeg', 0.82) }
 }
 
+function frameToJpeg(video: HTMLVideoElement, maxEdge = 1280): string | null {
+  if (!video.videoWidth) return null
+  const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight))
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.round(video.videoWidth * scale)
+  canvas.height = Math.round(video.videoHeight * scale)
+  canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height)
+  return canvas.toDataURL('image/jpeg', 0.85)
+}
+
 export function Scan({
   onClose,
   onResult,
@@ -43,9 +65,12 @@ export function Scan({
 }) {
   const [mode, setMode] = useState<Mode>('camera')
   const [phase, setPhase] = useState<Phase>('capture')
+  const [stages, setStages] = useState<string[]>(MEAL_STAGES)
   const [shot, setShot] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const [description, setDescription] = useState('')
+  const [manualCode, setManualCode] = useState('')
+  const [detected, setDetected] = useState<string | null>(null)
   const [error, setError] = useState('')
   const [stage, setStage] = useState(0)
   const [camError, setCamError] = useState('')
@@ -53,6 +78,9 @@ export function Scan({
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
+  const busyRef = useRef(false)
+
+  const liveCamera = (mode === 'camera' || mode === 'package') && !shot
 
   const stopCamera = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
@@ -60,8 +88,9 @@ export function Scan({
   }, [])
 
   useEffect(() => {
-    if (mode !== 'camera' || shot) return
+    if (!liveCamera) return
     let cancelled = false
+    setCamError('')
     navigator.mediaDevices
       ?.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
       .then((stream) => {
@@ -75,33 +104,85 @@ export function Scan({
           videoRef.current.play().catch(() => {})
         }
       })
-      .catch(() =>
-        !cancelled &&
-        setCamError('No camera available here — choose a photo instead.'),
-      )
+      .catch(() => !cancelled && setCamError('No camera available here.'))
     return () => {
       cancelled = true
       stopCamera()
     }
-  }, [mode, shot, stopCamera])
+  }, [liveCamera, stopCamera])
+
+  // Poll the video for a barcode while package mode is live.
+  useEffect(() => {
+    if (mode !== 'package' || camError || detected || phase !== 'capture') return
+    if (!barcodeSupported()) return
+    const Ctor = (window as unknown as { BarcodeDetector: BarcodeDetectorCtor }).BarcodeDetector
+    let detector: BarcodeDetectorLike
+    try {
+      detector = new Ctor({ formats: BARCODE_FORMATS })
+    } catch {
+      return
+    }
+    let stop = false
+    const tick = async () => {
+      const video = videoRef.current
+      if (stop || !video || !video.videoWidth) return
+      try {
+        const found = await detector.detect(video)
+        const code = found.find((f) => /^\d{6,14}$/.test(f.rawValue.replace(/\D/g, '')))
+        if (code && !stop) setDetected(code.rawValue.replace(/\D/g, ''))
+      } catch {
+        /* a frame that cannot be decoded is normal */
+      }
+    }
+    const id = setInterval(tick, 350)
+    return () => {
+      stop = true
+      clearInterval(id)
+    }
+  }, [mode, camError, detected, phase])
 
   useEffect(() => {
     if (phase !== 'analyzing') return
     setStage(0)
-    const id = setInterval(() => setStage((s) => Math.min(s + 1, STAGES.length - 1)), 1300)
+    const id = setInterval(() => setStage((s) => Math.min(s + 1, stages.length - 1)), 1100)
     return () => clearInterval(id)
-  }, [phase])
+  }, [phase, stages])
+
+  const run = async (
+    label: string[],
+    fn: () => Promise<ScanResult>,
+  ) => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setStages(label)
+    setPhase('analyzing')
+    try {
+      onResult(await fn())
+    } catch (e) {
+      setError((e as Error).message)
+      setPhase('error')
+    } finally {
+      busyRef.current = false
+    }
+  }
+
+  // A detected barcode goes straight to lookup.
+  useEffect(() => {
+    if (!detected) return
+    stopCamera()
+    void run(BARCODE_STAGES, async () => ({
+      analysis: await api.lookupBarcode(detected),
+      source: 'barcode',
+    }))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detected])
 
   const capture = () => {
     const video = videoRef.current
-    if (!video || !video.videoWidth) return
-    const maxEdge = 1024
-    const scale = Math.min(1, maxEdge / Math.max(video.videoWidth, video.videoHeight))
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.round(video.videoWidth * scale)
-    canvas.height = Math.round(video.videoHeight * scale)
-    canvas.getContext('2d')!.drawImage(video, 0, 0, canvas.width, canvas.height)
-    setShot(canvas.toDataURL('image/jpeg', 0.82))
+    if (!video) return
+    const data = frameToJpeg(video, 1024)
+    if (!data) return
+    setShot(data)
     stopCamera()
   }
 
@@ -119,31 +200,28 @@ export function Scan({
     }
   }
 
-  const runPhoto = async () => {
-    if (!shot) return
-    setPhase('analyzing')
-    try {
-      const analysis = await api.analyzePhoto(shot, 'image/jpeg', note.trim() || undefined)
-      onResult({ analysis, image: shot, source: 'photo' })
-    } catch (e) {
-      setError((e as Error).message)
-      setPhase('error')
-    }
+  const readLabelNow = () => {
+    const video = videoRef.current
+    const data = shot ?? (video ? frameToJpeg(video, 1280) : null)
+    if (!data) return
+    setShot(data)
+    stopCamera()
+    void run(LABEL_STAGES, async () => ({
+      analysis: await api.analyzeLabel(data, 'image/jpeg'),
+      image: data,
+      source: 'label',
+    }))
   }
 
-  const runText = async () => {
-    if (!description.trim()) return
-    setPhase('analyzing')
-    try {
-      const analysis = await api.analyzeText(description.trim())
-      onResult({ analysis, source: 'text' })
-    } catch (e) {
-      setError((e as Error).message)
-      setPhase('error')
-    }
+  const retry = () => {
+    setError('')
+    setDetected(null)
+    setManualCode('')
+    setShot(null)
+    setPhase('capture')
   }
 
-  if (phase === 'analyzing') return <Analyzing shot={shot} stage={stage} />
+  if (phase === 'analyzing') return <Analyzing shot={shot} stage={stage} stages={stages} />
 
   if (phase === 'error') {
     return (
@@ -153,15 +231,21 @@ export function Scan({
             <span style={{ color: 'var(--bad)' }}>
               <Icon name="info" size={40} stroke={1.6} />
             </span>
-            <h2 className="h2">That estimate failed</h2>
+            <h2 className="h2">That did not work</h2>
             <p className="body" style={{ maxWidth: 300 }}>
               {error}
             </p>
+            {mode === 'package' && (
+              <p className="small" style={{ maxWidth: 300 }}>
+                Own-brand and loose items are often missing from the database. Photographing the
+                nutrition panel works for anything.
+              </p>
+            )}
             <div className="row" style={{ gap: 10 }}>
               <button className="btn btn-ghost" onClick={onClose}>
                 Close
               </button>
-              <button className="btn" onClick={() => setPhase('capture')}>
+              <button className="btn" onClick={retry}>
                 Try again
               </button>
             </div>
@@ -169,6 +253,14 @@ export function Scan({
         </div>
       </div>
     )
+  }
+
+  const switchMode = (next: Mode) => {
+    stopCamera()
+    setShot(null)
+    setDetected(null)
+    setNote('')
+    setMode(next)
   }
 
   return (
@@ -180,28 +272,55 @@ export function Scan({
         <button className="icon-btn" onClick={onClose} aria-label="Close">
           <Icon name="close" size={17} stroke={2.1} />
         </button>
-        <div className="seg grow" style={{ maxWidth: 230 }}>
-          <button aria-pressed={mode === 'camera'} onClick={() => setMode('camera')}>
-            Photo
+        <div className="seg grow" style={{ maxWidth: 290 }}>
+          <button aria-pressed={mode === 'camera'} onClick={() => switchMode('camera')}>
+            Meal
           </button>
-          <button
-            aria-pressed={mode === 'describe'}
-            onClick={() => {
-              stopCamera()
-              setMode('describe')
-            }}
-          >
+          <button aria-pressed={mode === 'package'} onClick={() => switchMode('package')}>
+            Package
+          </button>
+          <button aria-pressed={mode === 'describe'} onClick={() => switchMode('describe')}>
             Describe
           </button>
         </div>
         <span style={{ width: 40 }} />
       </div>
 
-      {mode === 'camera' ? (
+      {mode === 'describe' ? (
+        <div className="scroll" style={{ paddingTop: 8 }}>
+          <h1 className="h1" style={{ marginBottom: 10 }}>
+            Describe what you ate
+          </h1>
+          <p className="body" style={{ marginBottom: 20 }}>
+            Portions help: “a large flat white and two slices of sourdough with butter”.
+          </p>
+          <textarea
+            className="field"
+            style={{ minHeight: 140 }}
+            placeholder="What did you eat?"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <button
+            className="btn btn-accent btn-block"
+            style={{ marginTop: 16 }}
+            disabled={!description.trim()}
+            onClick={() =>
+              void run(MEAL_STAGES, async () => ({
+                analysis: await api.analyzeText(description.trim()),
+                source: 'text',
+              }))
+            }
+          >
+            <Icon name="sparkle" size={17} stroke={1.8} />
+            Estimate it
+          </button>
+        </div>
+      ) : (
         <>
           <div className="camera-stage">
             {shot ? (
-              <img className="shot" src={shot} alt="Captured meal" />
+              <img className="shot" src={shot} alt="Captured" />
             ) : camError ? (
               <div
                 className="col"
@@ -209,7 +328,10 @@ export function Scan({
               >
                 <Icon name="image" size={34} stroke={1.5} />
                 <p className="body" style={{ color: 'rgba(255,255,255,0.8)' }}>
-                  {camError}
+                  {camError}{' '}
+                  {mode === 'package'
+                    ? 'Type the barcode below, or choose a photo of the label.'
+                    : 'Choose a photo instead.'}
                 </p>
                 <button className="btn btn-sm" onClick={() => fileRef.current?.click()}>
                   Choose a photo
@@ -218,25 +340,24 @@ export function Scan({
             ) : (
               <>
                 <video ref={videoRef} playsInline muted />
-                <div className="reticle">
-                  <span />
-                  <span />
-                  <span />
-                  <span />
-                </div>
+                {mode === 'package' ? <BarcodeReticle /> : <MealReticle />}
                 <p
                   className="small"
                   style={{
                     position: 'absolute',
                     bottom: 20,
-                    left: 0,
-                    right: 0,
+                    left: 16,
+                    right: 16,
                     textAlign: 'center',
                     color: 'rgba(255,255,255,0.82)',
                     fontWeight: 600,
                   }}
                 >
-                  Fill the frame with the whole plate
+                  {mode === 'package'
+                    ? barcodeSupported()
+                      ? 'Hold the barcode inside the line'
+                      : 'This browser cannot read barcodes live — type the number or shoot the panel'
+                    : 'Fill the frame with the whole plate'}
                 </p>
               </>
             )}
@@ -244,11 +365,44 @@ export function Scan({
 
           <div
             style={{
-              padding: '18px 20px calc(22px + env(safe-area-inset-bottom))',
+              padding: '16px 20px calc(20px + env(safe-area-inset-bottom))',
               background: 'var(--bg)',
             }}
           >
-            {shot ? (
+            {mode === 'package' ? (
+              <div className="col" style={{ gap: 12 }}>
+                <div className="row" style={{ gap: 10 }}>
+                  <input
+                    className="field num grow"
+                    inputMode="numeric"
+                    placeholder="Or type the barcode number"
+                    value={manualCode}
+                    onChange={(e) => setManualCode(e.target.value.replace(/\D/g, '').slice(0, 14))}
+                  />
+                  <button
+                    className="btn btn-accent"
+                    disabled={manualCode.length < 6}
+                    onClick={() =>
+                      void run(BARCODE_STAGES, async () => ({
+                        analysis: await api.lookupBarcode(manualCode),
+                        source: 'barcode',
+                      }))
+                    }
+                  >
+                    Look up
+                  </button>
+                </div>
+                <button className="btn btn-soft btn-block" onClick={readLabelNow} disabled={!!camError && !shot}>
+                  <Icon name="text" size={16} stroke={1.8} />
+                  {shot ? 'Read this panel' : 'Read the nutrition panel instead'}
+                </button>
+                {shot && (
+                  <button className="btn btn-ghost btn-block" onClick={() => setShot(null)}>
+                    Retake
+                  </button>
+                )}
+              </div>
+            ) : shot ? (
               <div className="col" style={{ gap: 13 }}>
                 <input
                   className="field"
@@ -266,7 +420,16 @@ export function Scan({
                   >
                     Retake
                   </button>
-                  <button className="btn btn-accent grow" onClick={runPhoto}>
+                  <button
+                    className="btn btn-accent grow"
+                    onClick={() =>
+                      void run(MEAL_STAGES, async () => ({
+                        analysis: await api.analyzePhoto(shot, 'image/jpeg', note.trim() || undefined),
+                        image: shot,
+                        source: 'photo',
+                      }))
+                    }
+                  >
                     <Icon name="sparkle" size={17} stroke={1.8} />
                     Analyse
                   </button>
@@ -301,37 +464,60 @@ export function Scan({
             }}
           />
         </>
-      ) : (
-        <div className="scroll" style={{ paddingTop: 8 }}>
-          <h1 className="h1" style={{ marginBottom: 10 }}>
-            Describe what you ate
-          </h1>
-          <p className="body" style={{ marginBottom: 20 }}>
-            Portions help: “a large flat white and two slices of sourdough with butter”.
-          </p>
-          <textarea
-            className="field"
-            style={{ minHeight: 140 }}
-            placeholder="What did you eat?"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-          <button
-            className="btn btn-accent btn-block"
-            style={{ marginTop: 16 }}
-            onClick={runText}
-            disabled={!description.trim()}
-          >
-            <Icon name="sparkle" size={17} stroke={1.8} />
-            Estimate it
-          </button>
-        </div>
       )}
     </div>
   )
 }
 
-function Analyzing({ shot, stage }: { shot: string | null; stage: number }) {
+function MealReticle() {
+  return (
+    <div className="reticle">
+      <span />
+      <span />
+      <span />
+      <span />
+    </div>
+  )
+}
+
+function BarcodeReticle() {
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        left: '8%',
+        right: '8%',
+        top: '38%',
+        height: 128,
+        border: '2.5px solid rgba(255,255,255,0.92)',
+        borderRadius: 14,
+        pointerEvents: 'none',
+      }}
+    >
+      <span
+        style={{
+          position: 'absolute',
+          left: 12,
+          right: 12,
+          top: '50%',
+          height: 2,
+          background: 'var(--accent)',
+          boxShadow: '0 0 10px var(--accent)',
+        }}
+      />
+    </div>
+  )
+}
+
+function Analyzing({
+  shot,
+  stage,
+  stages,
+}: {
+  shot: string | null
+  stage: number
+  stages: string[]
+}) {
   return (
     <div className="fullscreen">
       <div className="camera-stage" style={{ flex: '0 0 46%' }}>
@@ -342,7 +528,7 @@ function Analyzing({ shot, stage }: { shot: string | null; stage: number }) {
           </>
         ) : (
           <div style={{ color: 'rgba(255,255,255,0.6)' }}>
-            <Icon name="text" size={34} stroke={1.5} />
+            <Icon name="barcode" size={40} stroke={1.5} />
           </div>
         )}
       </div>
@@ -351,7 +537,7 @@ function Analyzing({ shot, stage }: { shot: string | null; stage: number }) {
           Working it out…
         </h1>
         <div className="col" style={{ gap: 14 }}>
-          {STAGES.map((s, i) => (
+          {stages.map((s, i) => (
             <div key={s} className="row" style={{ gap: 11, opacity: i <= stage ? 1 : 0.3 }}>
               <span
                 style={{
@@ -383,8 +569,7 @@ function Analyzing({ shot, stage }: { shot: string | null; stage: number }) {
         <div className="banner" style={{ marginTop: 26 }}>
           <Icon name="info" size={16} stroke={1.9} />
           <span>
-            Estimates come from what the photo shows. Check the portion on the next screen and
-            correct it if it looks off.
+            Check the serving size on the next screen — a pack is often more than one serving.
           </span>
         </div>
       </div>

@@ -49,6 +49,13 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ image, mimeType, note }),
     }),
+  analyzeLabel: (image: string, mimeType: string) =>
+    request<Analysis>('/analyze', {
+      method: 'POST',
+      body: JSON.stringify({ image, mimeType, mode: 'label' }),
+    }),
+  lookupBarcode: (code: string) =>
+    request<Analysis>('/barcode', { method: 'POST', body: JSON.stringify({ code }) }),
   analyzeText: (description: string) =>
     request<Analysis>('/analyze', { method: 'POST', body: JSON.stringify({ description }) }),
   refine: (entry: Analysis, instruction: string) =>

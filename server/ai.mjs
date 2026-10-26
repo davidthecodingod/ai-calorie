@@ -123,6 +123,8 @@ function normalize(raw) {
     health_score: Math.min(100, Math.max(0, Math.round(num(raw.health_score, 50)))),
     confidence: Math.min(1, Math.max(0, num(raw.confidence, 0.6))),
     note: String(raw.note || '').slice(0, 240),
+    brand: String(raw.brand || '').slice(0, 40),
+    ingredientsText: String(raw.ingredients_text || raw.ingredientsText || '').slice(0, 600),
     ingredients: (Array.isArray(raw.ingredients) ? raw.ingredients : [])
       .slice(0, 8)
       .map((i) => ({
@@ -152,6 +154,39 @@ export async function analyzeImage({ base64, mimeType, note }) {
 export async function analyzeText({ description }) {
   const text = `Estimate the nutrition of this meal described in words: "${description}"\n\n${SCHEMA_RULES}`
   return normalize(parseJson(await complete([{ role: 'user', content: text }])))
+}
+
+const LABEL_RULES = `Reply with ONE JSON object and nothing else. No prose, no markdown fence.
+{
+  "name": string,               // the product name as printed
+  "brand": string,              // brand if visible, else ""
+  "portion": string,            // the serving the panel is stated per, e.g. "1 bar (40 g)"
+  "calories": number,           // PER SERVING, exactly as printed
+  "protein_g": number,
+  "carbs_g": number,            // total carbohydrate
+  "fat_g": number,              // total fat
+  "fiber_g": number,
+  "sugar_g": number,
+  "health_score": number,       // 0-100, your own judgement of this food
+  "confidence": number,         // 0-1, how legible the panel was
+  "ingredients_text": string,   // the ingredients list as printed, or ""
+  "ingredients": [],
+  "note": string
+}
+Copy the printed numbers; do not recompute or round them. Use the PER SERVING
+column when the panel shows both per-serving and per-100 g. If the panel states
+only per 100 g, use that and say so in "note". If a value is not printed, use 0.`
+
+export async function analyzeLabel({ base64, mimeType }) {
+  const content = [
+    { type: 'image', source: { type: 'base64', media_type: mimeType, data: base64 } },
+    {
+      type: 'text',
+      text: `This is a photo of a packaged food's nutrition information panel.
+Read it and transcribe what it states.\n\n${LABEL_RULES}`,
+    },
+  ]
+  return normalize(parseJson(await complete([{ role: 'user', content }])))
 }
 
 export async function refine({ entry, instruction }) {

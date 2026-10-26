@@ -204,14 +204,18 @@ export function MealRow({ entry, onOpen }: { entry: Entry; onOpen: () => void })
         <img className="thumb" src={entry.image} alt="" />
       ) : (
         <span className="thumb" style={{ color: 'var(--muted)' }}>
-          <Icon name={entry.source === 'text' ? 'text' : 'image'} size={20} stroke={1.7} />
+          <Icon
+            name={entry.source === 'barcode' ? 'barcode' : entry.source === 'text' ? 'text' : 'image'}
+            size={20}
+            stroke={1.7}
+          />
         </span>
       )}
       <span className="wrap-tight grow">
         <span className="h3 truncate">{entry.name}</span>
         <span className="small truncate">
           {entry.servings !== 1 ? `${entry.servings}× ` : ''}
-          {entry.portion}
+          {entry.brand ? `${entry.brand} · ${entry.portion}` : entry.portion}
         </span>
         <span className="row" style={{ gap: 9, marginTop: 4 }}>
           <Macro color="var(--protein)" value={Math.round(entry.protein_g * (entry.servings || 1))} />

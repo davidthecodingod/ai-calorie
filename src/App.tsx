@@ -129,7 +129,7 @@ export default function App() {
         <Result
           draft={opened}
           existing={opened}
-          source={opened.source === 'text' ? 'text' : 'photo'}
+          source={opened.source}
           date={opened.date}
           onClose={() => setOpened(null)}
         />

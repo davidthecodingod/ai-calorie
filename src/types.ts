@@ -47,6 +47,10 @@ export interface Analysis {
   confidence: number
   note: string
   ingredients: Ingredient[]
+  /** Set for packaged food: the brand from the label. */
+  brand?: string
+  /** Set for packaged food: the ingredients list as printed. */
+  ingredientsText?: string
 }
 
 export interface Entry extends Analysis {
@@ -57,7 +61,7 @@ export interface Entry extends Analysis {
   slot: MealSlot
   servings: number
   image?: string
-  source: 'photo' | 'text' | 'barcode'
+  source: 'photo' | 'text' | 'barcode' | 'label'
 }
 
 export interface WeightPoint {

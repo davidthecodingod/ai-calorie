@@ -4,7 +4,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadEnv } from './env.mjs'
 import { store } from './store.mjs'
-import { analyzeImage, analyzeText, refine, provider } from './ai.mjs'
+import { analyzeImage, analyzeLabel, analyzeText, refine, provider } from './ai.mjs'
+import { lookupBarcode, NotFound } from './offapi.mjs'
 import { runSelfTest, appMeta } from './selftest.mjs'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -60,16 +61,32 @@ app.post('/api/reset', (_req, res) => {
 
 app.post('/api/analyze', async (req, res) => {
   try {
-    const { image, mimeType, note, description } = req.body || {}
+    const { image, mimeType, note, description, mode } = req.body || {}
     if (image) {
       const base64 = String(image).replace(/^data:[^;]+;base64,/, '')
-      res.json(await analyzeImage({ base64, mimeType: mimeType || 'image/jpeg', note }))
+      const type = mimeType || 'image/jpeg'
+      res.json(
+        mode === 'label'
+          ? await analyzeLabel({ base64, mimeType: type })
+          : await analyzeImage({ base64, mimeType: type, note }),
+      )
     } else if (description) {
       res.json(await analyzeText({ description }))
     } else {
       res.status(400).json({ error: 'send either an image or a description' })
     }
   } catch (err) {
+    fail(res, err)
+  }
+})
+
+app.post('/api/barcode', async (req, res) => {
+  try {
+    const code = req.body?.code
+    if (!code) return res.status(400).json({ error: 'a barcode is required' })
+    res.json(await lookupBarcode(code))
+  } catch (err) {
+    if (err instanceof NotFound) return res.status(404).json({ error: err.message })
     fail(res, err)
   }
 })

@@ -20,7 +20,7 @@ export function Result({
   draft: Analysis
   existing?: Entry
   image?: string
-  source: 'photo' | 'text'
+  source: 'photo' | 'text' | 'barcode' | 'label'
   date: string
   onClose: () => void
 }) {
@@ -107,7 +107,7 @@ export function Result({
                 borderBottom: '1px solid var(--line)',
               }}
             >
-              <Icon name="text" size={32} stroke={1.5} />
+              <Icon name={source === 'barcode' ? 'barcode' : 'text'} size={32} stroke={1.5} />
             </div>
           )}
           <button
@@ -176,7 +176,7 @@ export function Result({
             </button>
           )}
           <p className="small" style={{ marginBottom: 18 }}>
-            {a.portion}
+            {a.brand ? `${a.brand} · ${a.portion}` : a.portion}
           </p>
 
           <div className="card" style={{ padding: 20, marginBottom: 12 }}>
@@ -246,6 +246,17 @@ export function Result({
                     </span>
                   </div>
                 ))}
+              </div>
+            </div>
+          )}
+
+          {a.ingredientsText && (
+            <div className="col" style={{ gap: 10, marginBottom: 12 }}>
+              <p className="eyebrow">Ingredients as printed</p>
+              <div className="card" style={{ padding: 16 }}>
+                <p className="small" style={{ lineHeight: 1.55 }}>
+                  {a.ingredientsText}
+                </p>
               </div>
             </div>
           )}

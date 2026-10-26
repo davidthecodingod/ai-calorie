@@ -12,6 +12,10 @@ photo you choose to have analysed.
 - **Scan a meal** — take a photo (or pick one, or just describe it in words) and
   get calories, protein, carbs, fat, fibre, sugar, a 0–100 health score and an
   ingredient-by-ingredient breakdown.
+- **Scan a package** — point the camera at a barcode and the product is looked up
+  in Open Food Facts, so the figures are the label's own rather than a guess. For
+  anything not in the database, photograph the nutrition panel instead and it is
+  transcribed.
 - **Correct it in words** — "it was a double portion", "no dressing" — and the
   estimate is recomputed.
 - **Daily targets** — built from your height, weight, age, activity and goal with
@@ -38,7 +42,11 @@ For development with hot reload:
 npm run dev
 ```
 
-## Nutrition estimates
+## Where the numbers come from
+
+- **Barcodes** — [Open Food Facts](https://world.openfoodfacts.org), open data, no
+  key and no account. Figures are the manufacturer's, scaled to one serving.
+- **Meal photos, descriptions and nutrition panels** — a vision model.
 
 Estimates come from a vision model. The app looks for credentials in this order:
 
