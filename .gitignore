@@ -4,3 +4,7 @@ dist
 .env.local
 .DS_Store
 *.log
+
+# Tesseract language data, fetched on demand at runtime
+eng.traineddata
+*.traineddata
