@@ -2,6 +2,7 @@
   "name": "ai-calorie",
   "version": "1.0.0",
   "private": true,
+  "license": "MIT",
   "description": "AI Calorie - photo-based calorie and macro tracker",
   "type": "module",
   "main": "server/index.mjs",

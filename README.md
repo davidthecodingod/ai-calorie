@@ -73,3 +73,8 @@ It makes one real call through publik API and prints a single line
 These are estimates from a photo, not measurements. Portion size is the largest
 source of error — check it on the result screen and correct it when it looks off.
 AI Calorie is not medical advice.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). The numbers this app produces are estimates, and
+the licence's "as is, without warranty" terms apply to them too.
